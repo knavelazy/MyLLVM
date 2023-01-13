@@ -559,12 +559,19 @@ public:
     unsigned Generation = 0;
     int MatchingId = -1;
     bool IsAtomic = false;
+    //todo Z.L: method for now is to maintain the ordering of last load
+    AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
 
     LoadValue() = default;
     LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
               bool IsAtomic)
         : DefInst(Inst), Generation(Generation), MatchingId(MatchingId),
           IsAtomic(IsAtomic) {}
+
+    LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
+              bool IsAtomic, AtomicOrdering Ordering)
+        : DefInst(Inst), Generation(Generation), MatchingId(MatchingId),
+          IsAtomic(IsAtomic), Ordering(Ordering) {}
   };
 
   using LoadMapAllocator =
@@ -1112,9 +1119,11 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
   if (InVal.MatchingId != MemInst.getMatchingId())
     return nullptr;
   // We don't yet handle removing loads with ordering of any kind.
-  if (MemInst.isVolatile() || !MemInst.isUnordered())
+  // todo Z.L : HA, but I do!
+  if (MemInst.isVolatile())
     return nullptr;
   // We can't replace an atomic load with one which isn't also atomic.
+  // todo Z.L : Seems okay.
   if (MemInst.isLoad() && !InVal.IsAtomic && MemInst.isAtomic())
     return nullptr;
   // The value V returned from this function is used differently depending
@@ -1132,6 +1141,29 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
                       : nullptr;
   if (MemInst.isStore() && InVal.DefInst != Result)
     return nullptr;
+
+  //todo Z.L : check ordering to decide whether to remove a load
+  if (MemInst.isLoad()){
+    if(auto* LL = dyn_cast<LoadInst>(Other)){
+      //MemInst is a load, i.e. LL, so eliminate it depending on the DefInst
+      if(auto* EL = dyn_cast<LoadInst>(Matching)){
+        if(isStrongerThan(LL->getOrdering(), EL->getOrdering())) {
+          LLVM_DEBUG(dbgs() << "  Later load has a stronger ordering" <<
+                     "    Earlier: " << *Matching <<
+                     "    Later: " << *Other << '\n');
+          return nullptr;
+        }
+      }
+      if(auto* ES = dyn_cast<StoreInst>(Matching)){
+        if(isStrongerThan(LL->getOrdering(), ES->getOrdering())){
+          LLVM_DEBUG(dbgs() << "  Load has a stronger ordering" <<
+                     "    Store: " << *Matching <<
+                     "    Load: " << *Other << '\n');
+          return nullptr;
+        }
+      }
+    }
+  }
 
   // Deal with non-target memory intrinsics.
   bool MatchingNTI = isHandledNonTargetIntrinsic(Matching);
@@ -1183,7 +1215,7 @@ bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
   // other atomic stores since we were going to execute the non-atomic
   // one anyway and the atomic one might never have become visible.
 
-  //TODO: Refine the condition
+  //todo Z.L: Refine the condition
   //  Currently, remove the first store if it has a weaker or equal ordering
 
   if(auto* ESI = dyn_cast<StoreInst>(Earlier.get())){
@@ -1429,15 +1461,18 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     ParseMemoryInst MemInst(&Inst, TTI);
     // If this is a non-volatile load, process it.
     if (MemInst.isValid() && MemInst.isLoad()) {
-      //todo : (very likely) need to change this conditional branch to deal with rar
 
       // (conservatively) we can't peak past the ordering implied by this
       // operation, but we can add this load to our set of available values
       if (MemInst.isVolatile() || !MemInst.isUnordered()) {
         LastStore = nullptr;
-        ++CurrentGeneration;
+        //todo Z.L : generation update might be not necessary for atomics
+        if (MemInst.isVolatile()){
+          ++CurrentGeneration;
+        }
       }
 
+      //todo : deal with invariant loads (maybe)
       if (MemInst.isInvariantLoad()) {
         // If we pass an invariant load, we know that memory location is
         // indefinitely constant from the moment of first dereferenceability.
