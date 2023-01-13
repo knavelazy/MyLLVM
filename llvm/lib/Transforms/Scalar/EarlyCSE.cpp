@@ -1157,18 +1157,23 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
 bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
                                 const ParseMemoryInst &Later) {
   // Can we remove Earlier store because of Later store?
+  //todo : original assertion commented
+//  assert(Earlier.isUnordered() && !Earlier.isVolatile() &&
+//         "Violated invariant");
+  // todo : now my version simply guarantees Earlier is not volatile
+  assert(!Earlier.isVolatile() && "Earlier store cannot be volatile!");
 
-  assert(Earlier.isUnordered() && !Earlier.isVolatile() &&
-         "Violated invariant");
   if (Earlier.getPointerOperand() != Later.getPointerOperand()){
-    LLVM_DEBUG(dbgs() << "Pointer operand not equal on" << *(Earlier.get()) << "and" <<
-               *(Later.get()) << '\n');
+    LLVM_DEBUG(dbgs() << "  Pointer operand not equal" <<
+               "    Earlier: " << *(Earlier.get()) <<
+               "    Later: " << *(Later.get()) << '\n');
     return false;
   }
 
   if (Earlier.getMatchingId() != Later.getMatchingId()){
-    LLVM_DEBUG(dbgs() << "Instruction id not equal on" << *(Earlier.get()) << "and" <<
-        *(Later.get()) << '\n');
+    LLVM_DEBUG(dbgs() << "  Instruction id not equal" <<
+               "    Earlier: " << *(Earlier.get()) <<
+               "    Later: " << *(Later.get()) << '\n');
     return false;
   }
 
@@ -1179,13 +1184,24 @@ bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
   // one anyway and the atomic one might never have become visible.
 
   //TODO: Refine the condition
-  //return true;
+  //  Currently, remove the first store if it has a weaker or equal ordering
 
-  if (!Earlier.isUnordered() || !Later.isUnordered()) {
-    LLVM_DEBUG(dbgs() << *(Earlier.get()) << "or" << *(Later.get())
-           <<"is not unordered" << '\n');
-    return false;
+  if(auto* ESI = dyn_cast<StoreInst>(Earlier.get())){
+    if (auto* LSI = dyn_cast<StoreInst>(Later.get())){
+      if(isStrongerThan(ESI->getOrdering(), LSI->getOrdering())){
+          LLVM_DEBUG(dbgs() << "  Later SI has a weaker order\n" <<
+                     "    Earlier: " << *(Earlier.get()) <<
+                     "    Later: " << *(Later.get()) << '\n');
+          return false;
+      }
+    }
   }
+
+//  if (!Earlier.isUnordered() || !Later.isUnordered()) {
+//    LLVM_DEBUG(dbgs() <<"One of instructions: " << *(Earlier.get()) << " or "
+//                      << *(Later.get()) <<" is not unordered" << '\n');
+//    //return false;
+//  }
 
   // Deal with non-target memory intrinsics.
   bool ENTI = isHandledNonTargetIntrinsic(Earlier.get());
@@ -1242,7 +1258,6 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       LLVM_DEBUG(dbgs() << "EarlyCSE DCE: " << Inst << '\n');
       if (!DebugCounter::shouldExecute(CSECounter)) {
         LLVM_DEBUG(dbgs() << "Skipping due to debug counter\n");
-        //dbgs() << "Skipping due to debug counter\n";
         continue;
       }
 
@@ -1475,26 +1490,25 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     // memory, and thus will be treated the same as a regular store for
     // commoning purposes).
 
-    if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
-        !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
-      LastStore = nullptr;
-    }
-
+    //todo : original mayReadFromMemory determining commented
 //    if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
 //        !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
-//      //todo : refine this, Z.L
-//      if(auto *SI = dyn_cast<StoreInst>(&Inst)){
-//        if(SI->getOrdering() != AtomicOrdering::SequentiallyConsistent) {
-//          LastStore = nullptr;
-//          LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
-//                            << Inst << '\n');
-//        }
-//      } else {
-//        LastStore = nullptr;
-//        LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
+//      LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
 //                          << Inst << '\n');
-//      }
+//      LastStore = nullptr;
 //    }
+
+    if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
+        !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
+      //todo : refine this, Z.L
+      if(auto *SI = dyn_cast<StoreInst>(&Inst)){
+
+      } else {
+        LastStore = nullptr;
+        LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
+                          << Inst << '\n');
+      }
+    }
 
 
     // If this is a read-only call, process it.
@@ -1631,11 +1645,10 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         } else if (!MemInst.isUnordered()) {
           LastStore = nullptr;
           if (auto *SI = dyn_cast<StoreInst>(&Inst)){
-            if(SI->getOrdering() == AtomicOrdering::SequentiallyConsistent){
-              LLVM_DEBUG(dbgs() << "  LastStore set to seq_cst SI: "
+            LLVM_DEBUG(dbgs() << "  LastStore set to SI: "
                                 << Inst << '\n');
-              LastStore = &Inst;
-            }
+            LastStore = &Inst;
+
           }
         } else {
           LLVM_DEBUG(dbgs() << "  LastStore set to null by default: "
