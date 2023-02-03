@@ -612,12 +612,13 @@ Value *llvm::FindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
   Type *AccessTy = Load->getType();
   bool AtLeastAtomic = Load->isAtomic();
 
+  //todo Z.L : AHA, finally got u.
   if (!Load->isUnordered())
     return nullptr;
 
   // Try to find an available value first, and delay expensive alias analysis
   // queries until later.
-  Value *Available = nullptr;;
+  Value *Available = nullptr;
   SmallVector<Instruction *> MustNotAliasInsts;
   for (Instruction &Inst : make_range(++Load->getReverseIterator(),
                                       ScanBB->rend())) {
@@ -666,4 +667,124 @@ bool llvm::canReplacePointersIfEqual(Value *A, Value *B, const DataLayout &DL,
   }
 
   return true;
+}
+
+///todo: ------------- Following functions added by Z.L ------------------------
+
+static Value *testGetAvailableLoadStore(Instruction *Inst, const Value *Ptr,
+                                        Type *AccessTy, AtomicOrdering AtLeastOrdering,
+                                        const DataLayout &DL, bool *IsLoadCSE) {
+  // If this is a load of Ptr, the loaded value is available.
+  // (This is true even if the load is volatile or atomic, although
+  // those cases are unlikely.) todo Z.L : now likely
+  if (LoadInst *LI = dyn_cast<LoadInst>(Inst)) {
+    // We can value forward from an atomic to a non-atomic, but not the
+    // other way around.
+    //    if (LI->isAtomic() < AtLeastAtomic)
+    //      return nullptr;
+    //todo Z.L : we can forward as long as def inst has a stronger ordering
+    if (isStrongerThan(AtLeastOrdering, LI->getOrdering())){
+//      dbgs() << " Later load has a stronger ordering:\n"
+//             << "   found load inst: " << *Inst << '\n';
+      return nullptr;
+    }
+
+    Value *LoadPtr = LI->getPointerOperand()->stripPointerCasts();
+    if (!AreEquivalentAddressValues(LoadPtr, Ptr))
+      return nullptr;
+
+    if (CastInst::isBitOrNoopPointerCastable(LI->getType(), AccessTy, DL)) {
+      if (IsLoadCSE)
+        *IsLoadCSE = true;
+      return LI;
+    }
+  }
+
+  // If this is a store through Ptr, the value is available!
+  // (This is true even if the store is volatile or atomic, although
+  // those cases are unlikely.)
+  if (StoreInst *SI = dyn_cast<StoreInst>(Inst)) {
+    // We can value forward from an atomic to a non-atomic, but not the
+    // other way around.
+    //    if (SI->isAtomic() < AtLeastAtomic)
+    //      return nullptr;
+    if (isStrongerThan(AtLeastOrdering, SI->getOrdering())){
+//      dbgs() << " Later load has a stronger ordering:\n"
+//                        << "    found store inst: " << *Inst << '\n';
+      return nullptr;
+    }
+
+    Value *StorePtr = SI->getPointerOperand()->stripPointerCasts();
+    if (!AreEquivalentAddressValues(StorePtr, Ptr))
+      return nullptr;
+
+    if (IsLoadCSE)
+      *IsLoadCSE = false;
+
+    Value *Val = SI->getValueOperand();
+    if (CastInst::isBitOrNoopPointerCastable(Val->getType(), AccessTy, DL))
+      return Val;
+
+    TypeSize StoreSize = DL.getTypeStoreSize(Val->getType());
+    TypeSize LoadSize = DL.getTypeStoreSize(AccessTy);
+    if (TypeSize::isKnownLE(LoadSize, StoreSize))
+      if (auto *C = dyn_cast<Constant>(Val))
+        return ConstantFoldLoadFromConst(C, AccessTy, DL);
+  }
+
+  return nullptr;
+}
+
+Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
+                                      bool *IsLoadCSE,
+                                      unsigned MaxInstsToScan) {
+  dbgs() << "Checking load: " << *Load << '\n';
+  const DataLayout &DL = Load->getModule()->getDataLayout();
+  Value *StrippedPtr = Load->getPointerOperand()->stripPointerCasts();
+  BasicBlock *ScanBB = Load->getParent();
+  Type *AccessTy = Load->getType();
+//  bool AtLeastAtomic = Load->isAtomic();
+  AtomicOrdering AtLeastOrdering = Load->getOrdering();
+  //todo Z.L : AHA, finally got u.
+//  if (!Load->isUnordered())
+//    return nullptr;
+
+
+  // Try to find an available value first, and delay expensive alias analysis
+  // queries until later.
+  Value *Available = nullptr;
+  SmallVector<Instruction *> MustNotAliasInsts;
+  for (Instruction &Inst : make_range(++Load->getReverseIterator(),
+                                      ScanBB->rend())) {
+    if (Inst.isDebugOrPseudoInst())
+      continue;
+
+    if (MaxInstsToScan-- == 0)
+      return nullptr;
+
+    Available = testGetAvailableLoadStore(&Inst, StrippedPtr, AccessTy,
+                                      AtLeastOrdering, DL, IsLoadCSE);
+    if (Available){
+      dbgs() << "Found available: " << *Available << '\n';
+      break;
+    }
+    ///todo Z.L : again, \r mayWriteToMemory may need to be refined
+    if (Inst.mayWriteToMemory())
+      MustNotAliasInsts.push_back(&Inst);
+  }
+
+  // If we found an available value, ensure that the instructions in between
+  // did not modify the memory location.
+  if (Available) {
+    MemoryLocation Loc = MemoryLocation::get(Load);
+    for (Instruction *Inst : MustNotAliasInsts)
+      // todo Z.L : available dropped
+      if (isModSet(AA.getModRefInfo(Inst, Loc))){
+        dbgs() << "Available dropped for intervening modification:\n"
+            << "  " << *Inst << '\n';
+        return nullptr;
+      }
+  }
+//  dbgs() << "Returning Available found\n";
+  return Available;
 }

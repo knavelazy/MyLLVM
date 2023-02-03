@@ -417,13 +417,20 @@ bool llvm::wouldInstructionBeTriviallyDeadOnUnusedPaths(
 
 bool llvm::wouldInstructionBeTriviallyDead(Instruction *I,
                                            const TargetLibraryInfo *TLI) {
-  if (I->isTerminator())
-    return false;
+  //todo : Z.L
+//  LLVM_DEBUG(dbgs() << "  WouldBeDead Inst :" << *I << '\n');
 
+  if (I->isTerminator()){
+//    LLVM_DEBUG(dbgs() << "  No, this is Termi\n");
+    return false;
+  }
   // We don't want the landingpad-like instructions removed by anything this
   // general.
-  if (I->isEHPad())
+  if (I->isEHPad()){
+//    LLVM_DEBUG(dbgs() << "  No, this is EHPad\n");
     return false;
+  }
+
 
   // We don't want debug info removed by anything this general, unless
   // debug info is empty.
@@ -443,11 +450,16 @@ bool llvm::wouldInstructionBeTriviallyDead(Instruction *I,
     return true;
   }
 
-  if (!I->willReturn())
+  if (!I->willReturn()) {
+//    LLVM_DEBUG(dbgs() << "  No, this could return\n");
     return false;
+  }
 
-  if (!I->mayHaveSideEffects())
+  if (!I->mayHaveSideEffects()){
     return true;
+  }
+
+//  LLVM_DEBUG(dbgs() << "  Attention, may have side effects\n");
 
   // Special case intrinsics that "may have side effects" but can be deleted
   // when dead.
@@ -513,7 +525,7 @@ bool llvm::wouldInstructionBeTriviallyDead(Instruction *I,
     if (!EB || *EB == fp::ExceptionBehavior::ebIgnore)
       return true;
   }
-
+//  LLVM_DEBUG(dbgs() << "  No, by default\n");
   return false;
 }
 

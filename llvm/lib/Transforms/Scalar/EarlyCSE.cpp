@@ -1004,7 +1004,7 @@ bool EarlyCSE::isSameMemGeneration(unsigned EarlierGeneration,
 
   if (!MSSA)
     return false;
-
+  LLVM_DEBUG(dbgs() << "  Using MSSA!\n");
   // If MemorySSA has determined that one of EarlierInst or LaterInst does not
   // read/write memory, then we can safely return true here.
   // FIXME: We could be more aggressive when checking doesNotAccessMemory(),
@@ -1175,7 +1175,13 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
                                    cast<IntrinsicInst>(MemInst.get())))
       return nullptr;
   }
-
+  bool TestIsSameMemGen = isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
+                                              MemInst.get());
+  bool TestIsOpOnInvarMemAt = isOperatingOnInvariantMemAt(MemInst.get(), InVal.Generation);
+  LLVM_DEBUG(dbgs() << "  getMatchingValue CurGen: " << CurrentGeneration <<
+             " found Gen: " << InVal.Generation <<
+             "    isSameMemGen? " << TestIsSameMemGen <<
+             " isOpOnInvarMemAt? " << TestIsOpOnInvarMemAt << '\n');
   if (!isOperatingOnInvariantMemAt(MemInst.get(), InVal.Generation) &&
       !isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
                            MemInst.get()))
@@ -1472,13 +1478,14 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         }
       }
 
-      //todo : deal with invariant loads (maybe)
+      //todo Z.L : deal with invariant loads (maybe)
       if (MemInst.isInvariantLoad()) {
         // If we pass an invariant load, we know that memory location is
         // indefinitely constant from the moment of first dereferenceability.
         // We conservatively treat the invariant_load as that moment.  If we
         // pass a invariant load after already establishing a scope, don't
         // restart it since we want to preserve the earliest point seen.
+        LLVM_DEBUG(dbgs() << "Invariant load found: " << Inst << '\n');
         auto MemLoc = MemoryLocation::get(&Inst);
         if (!AvailableInvariants.count(MemLoc))
           AvailableInvariants.insert(MemLoc, CurrentGeneration);
@@ -1495,6 +1502,8 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       if (Value *Op = getMatchingValue(InVal, MemInst, CurrentGeneration)) {
         LLVM_DEBUG(dbgs() << "EarlyCSE CSE LOAD: " << Inst
                           << "  to: " << *InVal.DefInst << '\n');
+        LLVM_DEBUG(dbgs() << "CurGen: " << CurrentGeneration <<
+                   " found load with Gen: " << InVal.Generation << '\n');
         if (!DebugCounter::shouldExecute(CSECounter)) {
           LLVM_DEBUG(dbgs() << "Skipping due to debug counter\n");
           continue;
@@ -1625,6 +1634,8 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     // cannot be used so bump the generation count.
     if (Inst.mayWriteToMemory()) {
       ++CurrentGeneration;
+      LLVM_DEBUG(dbgs() << "  CurGen updated to " << CurrentGeneration <<
+                 " since Inst may write to memory: " << Inst << '\n');
 
       if (MemInst.isValid() && MemInst.isStore()) {
         // We do a trivial form of DSE if there are two stores to the same

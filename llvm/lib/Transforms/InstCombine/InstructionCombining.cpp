@@ -4128,7 +4128,17 @@ bool InstCombinerImpl::run() {
         // if so, remove it.
         if (isInstructionTriviallyDead(I, &TLI)) {
           eraseInstFromFunction(*I);
+        } else if (I->getOpcode()==Instruction::Load && I->use_empty()) {
+          // todo Z.L : added case for rar & raw
+          eraseInstFromFunction(*I);
         } else {
+          //todo Z.L
+//          int test_cnt = 0;
+//          for(auto U : I->users()){test_cnt++;}
+//          LLVM_DEBUG(dbgs() << "Inst is not dead yet, use list len :"
+//                     << test_cnt << '\n');
+
+
           Worklist.pushUsersToWorkList(*I);
           Worklist.push(I);
         }

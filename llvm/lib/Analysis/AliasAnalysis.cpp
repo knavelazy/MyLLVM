@@ -481,8 +481,10 @@ ModRefInfo AAResults::getModRefInfo(const LoadInst *L,
                                     const MemoryLocation &Loc,
                                     AAQueryInfo &AAQI) {
   // Be conservative in the face of atomic.
-  if (isStrongerThan(L->getOrdering(), AtomicOrdering::Unordered))
-    return ModRefInfo::ModRef;
+  // Todo Z.L : I finally caught u
+  // FIXME Z.L : Atomic Checking commented
+//  if (isStrongerThan(L->getOrdering(), AtomicOrdering::Unordered))
+//    return ModRefInfo::ModRef;
 
   // If the load address doesn't alias the given address, it doesn't read
   // or write the specified memory.
@@ -506,8 +508,9 @@ ModRefInfo AAResults::getModRefInfo(const StoreInst *S,
                                     const MemoryLocation &Loc,
                                     AAQueryInfo &AAQI) {
   // Be conservative in the face of atomic.
-  if (isStrongerThan(S->getOrdering(), AtomicOrdering::Unordered))
-    return ModRefInfo::ModRef;
+  // FIXME Z.L : Atomic Checking commented
+//  if (isStrongerThan(S->getOrdering(), AtomicOrdering::Unordered))
+//    return ModRefInfo::ModRef;
 
   if (Loc.Ptr) {
     AliasResult AR = alias(MemoryLocation::get(S), Loc, AAQI);
