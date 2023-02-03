@@ -738,7 +738,7 @@ static Value *testGetAvailableLoadStore(Instruction *Inst, const Value *Ptr,
 Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
                                       bool *IsLoadCSE,
                                       unsigned MaxInstsToScan) {
-  dbgs() << "Checking load: " << *Load << '\n';
+//  dbgs() << "Checking load: " << *Load << '\n';
   const DataLayout &DL = Load->getModule()->getDataLayout();
   Value *StrippedPtr = Load->getPointerOperand()->stripPointerCasts();
   BasicBlock *ScanBB = Load->getParent();
@@ -765,7 +765,7 @@ Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
     Available = testGetAvailableLoadStore(&Inst, StrippedPtr, AccessTy,
                                       AtLeastOrdering, DL, IsLoadCSE);
     if (Available){
-      dbgs() << "Found available: " << *Available << '\n';
+//      dbgs() << "Found available: " << *Available << '\n';
       break;
     }
     ///todo Z.L : again, \r mayWriteToMemory may need to be refined
@@ -780,8 +780,8 @@ Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
     for (Instruction *Inst : MustNotAliasInsts)
       // todo Z.L : available dropped
       if (isModSet(AA.getModRefInfo(Inst, Loc))){
-        dbgs() << "Available dropped for intervening modification:\n"
-            << "  " << *Inst << '\n';
+//        dbgs() << "Available dropped for intervening modification:\n"
+//            << "  " << *Inst << '\n';
         return nullptr;
       }
   }
