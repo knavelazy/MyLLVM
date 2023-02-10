@@ -849,7 +849,7 @@ struct DSEState {
     }
 
     // FIXME: Vet that this works for size upper-bounds. Seems unlikely that we'll
-    // get imprecise values here, though (except for unknown sizes).
+    //  get imprecise values here, though (except for unknown sizes).
     if (!KillingLoc.Size.isPrecise() || !DeadLoc.Size.isPrecise()) {
       // In case no constant size is known, try to an IR values for the number
       // of bytes written and check if they match.
