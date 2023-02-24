@@ -998,8 +998,33 @@ struct DSEState {
     assert(getLocForWrite(I) && "Must have analyzable write");
 
     // Don't remove volatile/atomic stores.
+    // todo Z.L : you are really everywhere :(
     if (StoreInst *SI = dyn_cast<StoreInst>(I))
       return SI->isUnordered();
+
+    if (auto *CB = dyn_cast<CallBase>(I)) {
+      // Don't remove volatile memory intrinsics.
+      if (auto *MI = dyn_cast<MemIntrinsic>(CB))
+        return !MI->isVolatile();
+
+      // Never remove dead lifetime intrinsics, e.g. because they are followed
+      // by a free.
+      if (CB->isLifetimeStartOrEnd())
+        return false;
+
+      return CB->use_empty() && CB->willReturn() && CB->doesNotThrow();
+    }
+
+    return false;
+  }
+  //todo Z.L : isRemovable is also invoked several times, let's rewrite it.
+  bool testIsRemovable(Instruction *I) {
+    assert(getLocForWrite(I) && "Must have analyzable write");
+
+    // Don't remove volatile/atomic stores.
+    // todo Z.L : currently return true on all stores.
+    if (StoreInst *SI = dyn_cast<StoreInst>(I))
+      return true;
 
     if (auto *CB = dyn_cast<CallBase>(I)) {
       // Don't remove volatile memory intrinsics.
@@ -1161,6 +1186,33 @@ struct DSEState {
 
     return isRefSet(BatchAA.getModRefInfo(UseInst, DefLoc));
   }
+  //todo Z.L : isReadClobber is invoked at several places across this file.
+  // So, my choice now is to replace some uses with this func
+  bool testIsReadClobber(const MemoryLocation &DefLoc, Instruction *UseInst) {
+    if (isNoopIntrinsic(UseInst))
+      return false;
+
+    // todo Z.L : currently take all stores as not read
+//    if (auto SI = dyn_cast<StoreInst>(UseInst))
+//      return isStrongerThan(SI->getOrdering(), AtomicOrdering::Monotonic);
+
+    if (!UseInst->mayReadFromMemory())
+      return false;
+
+    if (auto *CB = dyn_cast<CallBase>(UseInst))
+      if (CB->onlyAccessesInaccessibleMemory())
+        return false;
+
+    //todo Z.L : try to invoke a new method
+    if(auto *SI = dyn_cast<StoreInst>(UseInst)){
+      return isRefSet(BatchAA.testGetModRefInfoStore(SI,DefLoc));
+    }
+    if(auto *LI = dyn_cast<LoadInst>(UseInst)){
+      return isRefSet(BatchAA.testGetModRefInfoLoad(LI,DefLoc));
+    }
+
+    return isRefSet(BatchAA.getModRefInfo(UseInst, DefLoc));
+  }
 
   /// Returns true if a dependency between \p Current and \p KillingDef is
   /// guaranteed to be loop invariant for the loops that they are in. Either
@@ -1281,17 +1333,30 @@ struct DSEState {
 
       // Check for anything that looks like it will be a barrier to further
       // removal
-      if (isDSEBarrier(KillingUndObj, CurrentI)) {
-        LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
-        return None;
+      //todo Z.L : refined condition to support atomics
+      if(isNotStoreOrStrongerStore(CurrentI, KillingI)){
+        if (isDSEBarrier(KillingUndObj, CurrentI)) {
+          LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
+          return None;
+        }
       }
+      //original:
+//      if (isDSEBarrier(KillingUndObj, CurrentI)) {
+//        LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
+//        return None;
+//      }
 
       // If Current is known to be on path that reads DefLoc or is a read
       // clobber, bail out, as the path is not profitable. We skip this check
       // for intrinsic calls, because the code knows how to handle memcpy
       // intrinsics.
-      if (!isa<IntrinsicInst>(CurrentI) && isReadClobber(KillingLoc, CurrentI))
+      //todo Z.L: isReadClobber also protects atomics
+
+//      if (!isa<IntrinsicInst>(CurrentI) && isReadClobber(KillingLoc, CurrentI)){
+      if (!isa<IntrinsicInst>(CurrentI) && testIsReadClobber(KillingLoc, CurrentI)){
+        LLVM_DEBUG(dbgs() << "return None since CurrentI is a clobber.\n");
         return None;
+      }
 
       // Quick check if there are direct uses that are read-clobbers.
       if (any_of(Current->uses(), [this, &KillingLoc, StartAccess](Use &U) {
@@ -1306,8 +1371,11 @@ struct DSEState {
 
       // If Current does not have an analyzable write location or is not
       // removable, skip it.
+      // todo Z.L : isRemovable rewritten
       CurrentLoc = getLocForWrite(CurrentI);
-      if (!CurrentLoc || !isRemovable(CurrentI)) {
+//      if (!CurrentLoc || !isRemovable(CurrentI)) {
+      if (!CurrentLoc || !testIsRemovable(CurrentI)) {
+        LLVM_DEBUG(dbgs() << "   ...  CurrentI has no analyzable location or not removable\n");
         CanOptimize = false;
         continue;
       }
@@ -1351,9 +1419,10 @@ struct DSEState {
 
         // If Current does not write to the same object as KillingDef, check
         // the next candidate.
-        if (OR == OW_Unknown || OR == OW_None)
+        if (OR == OW_Unknown || OR == OW_None){
+          LLVM_DEBUG(dbgs() << "  ... Current does not write to same object as KillingDef\n");
           continue;
-        else if (OR == OW_MaybePartial) {
+        } else if (OR == OW_MaybePartial) {
           // If KillingDef only partially overwrites Current, check the next
           // candidate if the partial step limit is exceeded. This aggressively
           // limits the number of candidates for partial store elimination,
@@ -1367,7 +1436,7 @@ struct DSEState {
         }
       }
       break;
-    };
+    }
 
     // Accesses to objects accessible after the function returns can only be
     // eliminated if the access is dead along all paths to the exit. Collect
@@ -1446,7 +1515,9 @@ struct DSEState {
 
       // Uses which may read the original MemoryDef mean we cannot eliminate the
       // original MD. Stop walk.
-      if (isReadClobber(MaybeDeadLoc, UseInst)) {
+      // todo Z.L : again replaced with mine
+//      if (isReadClobber(MaybeDeadLoc, UseInst)) {
+      if (testIsReadClobber(MaybeDeadLoc, UseInst)) {
         LLVM_DEBUG(dbgs() << "    ... found read clobber\n");
         return None;
       }
@@ -1656,6 +1727,22 @@ struct DSEState {
       llvm_unreachable("other instructions should be skipped in MemorySSA");
     }
     return false;
+  }
+
+  //todo Z.L : return false iff
+  // - CurrentI and KillingI are both stores
+  // - CurrentI is weaker than KillingI
+  bool isNotStoreOrStrongerStore(Instruction *CurrentI, Instruction *KillingI){
+    if(auto* CurrentSI = dyn_cast<StoreInst>(CurrentI)){
+      if(auto* KillingSI = dyn_cast<StoreInst>(KillingI)){
+        if(isStrongerThan(CurrentSI->getOrdering(), KillingSI->getOrdering())){
+          return true;
+        } else {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   /// Eliminate writes to objects that are not visible in the caller and are not

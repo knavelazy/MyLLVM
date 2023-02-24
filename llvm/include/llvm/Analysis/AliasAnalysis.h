@@ -824,6 +824,17 @@ public:
     SimpleAAQueryInfo AAQIP;
     return getModRefInfo(I, OptLoc, AAQIP);
   }
+  //todo Z.L : added new methods for atomic load & store
+  ModRefInfo testGetModRefInfoStore(const StoreInst *S,
+                           const MemoryLocation &Loc) {
+    SimpleAAQueryInfo AAQIP;
+    return testGetModRefInfoStore(S, Loc, AAQIP);
+  }
+  ModRefInfo testGetModRefInfoLoad(const LoadInst *L,
+                                   const MemoryLocation &Loc) {
+    SimpleAAQueryInfo AAQIP;
+    return testGetModRefInfoLoad(L, Loc, AAQIP);
+  }
 
   /// A convenience wrapper for constructing the memory location.
   ModRefInfo getModRefInfo(const Instruction *I, const Value *P,
@@ -919,6 +930,15 @@ private:
   ModRefInfo getModRefInfo(const Instruction *I,
                            const Optional<MemoryLocation> &OptLoc,
                            AAQueryInfo &AAQIP);
+
+  /// todo Z.L : new methods added to deal with atomics
+  ModRefInfo testGetModRefInfoStore(const StoreInst *S,
+                                    const MemoryLocation &Loc,
+                           AAQueryInfo &AAQIP);
+  ModRefInfo testGetModRefInfoLoad(const LoadInst *L,
+                                   const MemoryLocation &Loc,
+                                    AAQueryInfo &AAQIP);
+
   ModRefInfo callCapturesBefore(const Instruction *I,
                                 const MemoryLocation &MemLoc, DominatorTree *DT,
                                 AAQueryInfo &AAQIP);
@@ -969,6 +989,16 @@ public:
                            const Optional<MemoryLocation> &OptLoc) {
     return AA.getModRefInfo(I, OptLoc, AAQI);
   }
+  /// todo Z.L : added new methods to deal with atomics in some known cases
+  ModRefInfo testGetModRefInfoStore(const StoreInst *S,
+                                    const MemoryLocation &Loc) {
+    return AA.testGetModRefInfoStore(S, Loc, AAQI);
+  }
+  ModRefInfo testGetModRefInfoLoad(const LoadInst *L,
+                                   const MemoryLocation &Loc) {
+    return AA.testGetModRefInfoLoad(L, Loc, AAQI);
+  }
+
   ModRefInfo getModRefInfo(Instruction *I, const CallBase *Call2) {
     return AA.getModRefInfo(I, Call2, AAQI);
   }

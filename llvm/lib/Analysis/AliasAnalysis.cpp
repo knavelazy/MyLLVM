@@ -483,8 +483,8 @@ ModRefInfo AAResults::getModRefInfo(const LoadInst *L,
   // Be conservative in the face of atomic.
   // Todo Z.L : I finally caught u
   // FIXME Z.L : Atomic Checking commented
-//  if (isStrongerThan(L->getOrdering(), AtomicOrdering::Unordered))
-//    return ModRefInfo::ModRef;
+  if (isStrongerThan(L->getOrdering(), AtomicOrdering::Unordered))
+    return ModRefInfo::ModRef;
 
   // If the load address doesn't alias the given address, it doesn't read
   // or write the specified memory.
@@ -509,8 +509,8 @@ ModRefInfo AAResults::getModRefInfo(const StoreInst *S,
                                     AAQueryInfo &AAQI) {
   // Be conservative in the face of atomic.
   // FIXME Z.L : Atomic Checking commented
-//  if (isStrongerThan(S->getOrdering(), AtomicOrdering::Unordered))
-//    return ModRefInfo::ModRef;
+  if (isStrongerThan(S->getOrdering(), AtomicOrdering::Unordered))
+    return ModRefInfo::ModRef;
 
   if (Loc.Ptr) {
     AliasResult AR = alias(MemoryLocation::get(S), Loc, AAQI);
@@ -531,6 +531,52 @@ ModRefInfo AAResults::getModRefInfo(const StoreInst *S,
 
   // Otherwise, a store just writes.
   return ModRefInfo::Mod;
+}
+///todo Z.L : two methods added to deal with atomics
+ModRefInfo AAResults::testGetModRefInfoStore(const StoreInst *S,
+                                             const MemoryLocation &Loc,
+                                             AAQueryInfo &AAQI) {
+  // Be conservative in the face of atomic.
+  // todo Z.L : Atomic Checking commented
+  //  if (isStrongerThan(S->getOrdering(), AtomicOrdering::Unordered))
+  //    return ModRefInfo::ModRef;
+
+  if (Loc.Ptr) {
+    AliasResult AR = alias(MemoryLocation::get(S), Loc, AAQI);
+    // If the store address cannot alias the pointer in question, then the
+    // specified memory cannot be modified by the store.
+    if (AR == AliasResult::NoAlias)
+      return ModRefInfo::NoModRef;
+
+    // If the pointer is a pointer to constant memory, then it could not have
+    // been modified by this store.
+    if (pointsToConstantMemory(Loc, AAQI))
+      return ModRefInfo::NoModRef;
+
+    // If the store address aliases the pointer as must alias, set Must.
+    if (AR == AliasResult::MustAlias)
+      return ModRefInfo::MustMod;
+  }
+
+  // Otherwise, a store just writes.
+  return ModRefInfo::Mod;
+}
+ModRefInfo AAResults::testGetModRefInfoLoad(const LoadInst *L,
+                                            const MemoryLocation &Loc,
+                                            AAQueryInfo &AAQI) {
+  //todo Z.L : Similar to \r testGetModRefInfoStore, atomic checks removed
+
+  // If the load address doesn't alias the given address, it doesn't read
+  // or write the specified memory.
+  if (Loc.Ptr) {
+    AliasResult AR = alias(MemoryLocation::get(L), Loc, AAQI);
+    if (AR == AliasResult::NoAlias)
+      return ModRefInfo::NoModRef;
+    if (AR == AliasResult::MustAlias)
+      return ModRefInfo::MustRef;
+  }
+  // Otherwise, a load just reads.
+  return ModRefInfo::Ref;
 }
 
 ModRefInfo AAResults::getModRefInfo(const FenceInst *S, const MemoryLocation &Loc) {

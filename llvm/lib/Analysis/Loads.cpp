@@ -777,13 +777,20 @@ Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
   // did not modify the memory location.
   if (Available) {
     MemoryLocation Loc = MemoryLocation::get(Load);
-    for (Instruction *Inst : MustNotAliasInsts)
-      // todo Z.L : available dropped
-      if (isModSet(AA.getModRefInfo(Inst, Loc))){
-//        dbgs() << "Available dropped for intervening modification:\n"
-//            << "  " << *Inst << '\n';
+    for (Instruction *Inst : MustNotAliasInsts){
+      // todo Z.L : created AAInfo methods to deal with loads and stores
+      if(auto *SI = dyn_cast<StoreInst>(Inst)) {
+        if(isModSet(AA.testGetModRefInfoStore(SI, Loc)))
+          return nullptr;
+      } else if(auto *LI = dyn_cast<LoadInst>(Inst)) {
+        if(isModSet(AA.testGetModRefInfoLoad(LI, Loc)))
+          return nullptr;
+      } else if (isModSet(AA.getModRefInfo(Inst, Loc))) {
+        //        dbgs() << "Available dropped for intervening modification:\n"
+        //            << "  " << *Inst << '\n';
         return nullptr;
       }
+    }
   }
 //  dbgs() << "Returning Available found\n";
   return Available;
