@@ -1145,7 +1145,6 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
   //todo Z.L : check ordering to decide whether to remove a load
   if (MemInst.isLoad()){
     if(auto* LL = dyn_cast<LoadInst>(Other)){
-      //MemInst is a load, i.e. LL, so eliminate it depending on the DefInst
       if(auto* EL = dyn_cast<LoadInst>(Matching)){
         if(isStrongerThan(LL->getOrdering(), EL->getOrdering())) {
           LLVM_DEBUG(dbgs() << "  Later load has a stronger ordering" <<
@@ -1175,13 +1174,14 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
                                    cast<IntrinsicInst>(MemInst.get())))
       return nullptr;
   }
-  bool TestIsSameMemGen = isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
-                                              MemInst.get());
-  bool TestIsOpOnInvarMemAt = isOperatingOnInvariantMemAt(MemInst.get(), InVal.Generation);
-  LLVM_DEBUG(dbgs() << "  getMatchingValue CurGen: " << CurrentGeneration <<
-             " found Gen: " << InVal.Generation <<
-             "    isSameMemGen? " << TestIsSameMemGen <<
-             " isOpOnInvarMemAt? " << TestIsOpOnInvarMemAt << '\n');
+  //todo Z.L : debug printing for generations
+//  bool TestIsSameMemGen = isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
+//                                              MemInst.get());
+//  bool TestIsOpOnInvarMemAt = isOperatingOnInvariantMemAt(MemInst.get(), InVal.Generation);
+//  LLVM_DEBUG(dbgs() << "  getMatchingValue CurGen: " << CurrentGeneration <<
+//             " found Gen: " << InVal.Generation <<
+//             "    isSameMemGen? " << TestIsSameMemGen <<
+//             " isOpOnInvarMemAt? " << TestIsOpOnInvarMemAt << '\n');
   if (!isOperatingOnInvariantMemAt(MemInst.get(), InVal.Generation) &&
       !isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
                            MemInst.get()))
@@ -1195,10 +1195,10 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
 bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
                                 const ParseMemoryInst &Later) {
   // Can we remove Earlier store because of Later store?
-  //todo : original assertion commented
+  //todo Z.L : original assertion commented
 //  assert(Earlier.isUnordered() && !Earlier.isVolatile() &&
 //         "Violated invariant");
-  // todo : now my version simply guarantees Earlier is not volatile
+  // todo Z.L : now my version simply guarantees Earlier is not volatile
   assert(!Earlier.isVolatile() && "Earlier store cannot be volatile!");
 
   if (Earlier.getPointerOperand() != Later.getPointerOperand()){
@@ -1223,18 +1223,17 @@ bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
 
   //todo Z.L: Refine the condition
   //  Currently, remove the first store if it has a weaker or equal ordering
-
   if(auto* ESI = dyn_cast<StoreInst>(Earlier.get())){
     if (auto* LSI = dyn_cast<StoreInst>(Later.get())){
       if(isStrongerThan(ESI->getOrdering(), LSI->getOrdering())){
-          LLVM_DEBUG(dbgs() << "  Later SI has a weaker order\n" <<
+          LLVM_DEBUG(dbgs() << "  Later store has a weaker order\n" <<
                      "    Earlier: " << *(Earlier.get()) <<
                      "    Later: " << *(Later.get()) << '\n');
           return false;
       }
     }
   }
-
+  //todo Z.L: original code commented
 //  if (!Earlier.isUnordered() || !Later.isUnordered()) {
 //    LLVM_DEBUG(dbgs() <<"One of instructions: " << *(Earlier.get()) << " or "
 //                      << *(Later.get()) <<" is not unordered" << '\n');
@@ -1534,7 +1533,7 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     // memory, and thus will be treated the same as a regular store for
     // commoning purposes).
 
-    //todo : original mayReadFromMemory determining commented
+    //todo Z.L : original mayReadFromMemory determining commented
 //    if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
 //        !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
 //      LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
@@ -1544,10 +1543,10 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
 
     if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
         !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
-      //todo : refine this, Z.L
-      if(auto *SI = dyn_cast<StoreInst>(&Inst)){
-
-      } else {
+      //todo Z.L : let stores escape
+//      if(auto *SI = dyn_cast<StoreInst>(&Inst)){
+//      } else {
+      if(!isa<StoreInst>(Inst)){
         LastStore = nullptr;
         LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
                           << Inst << '\n');
@@ -1678,26 +1677,27 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         // it's not clear this is a profitable transform. Another option would
         // be to merge the ordering with that of the post dominating store.
 
-        //todo : refine the condition
+        //todo Z.L : original code commented
         //if (MemInst.isUnordered() && !MemInst.isVolatile())
         //  LastStore = &Inst;
         //else
         //  LastStore = nullptr;
 
-        if (MemInst.isVolatile()){
+        //todo Z.L : let atomic stores be recorded
+        if (MemInst.isVolatile()){ // volatile
           LastStore = nullptr;
           LLVM_DEBUG(dbgs() << "  LastStore set to null because it's volatile: "
                      << Inst << '\n');
-        } else if (!MemInst.isUnordered()) {
+        } else if (!MemInst.isUnordered()) { // ordered but not volatile
           LastStore = nullptr;
-          if (auto *SI = dyn_cast<StoreInst>(&Inst)){
-            LLVM_DEBUG(dbgs() << "  LastStore set to SI: "
+          //if (auto *SI = dyn_cast<StoreInst>(&Inst)){
+          if(isa<StoreInst>(Inst)){
+            LLVM_DEBUG(dbgs() << "  LastStore set to: "
                                 << Inst << '\n');
             LastStore = &Inst;
-
           }
-        } else {
-          LLVM_DEBUG(dbgs() << "  LastStore set to null by default: "
+        } else { // unordered and not volatile
+          LLVM_DEBUG(dbgs() << "  LastStore set to: "
                             << Inst << '\n');
           LastStore = &Inst;
         }
