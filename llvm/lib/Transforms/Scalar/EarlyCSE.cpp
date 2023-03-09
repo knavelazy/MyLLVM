@@ -1119,11 +1119,11 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
   if (InVal.MatchingId != MemInst.getMatchingId())
     return nullptr;
   // We don't yet handle removing loads with ordering of any kind.
-  // todo Z.L : HA, but I do!
+  // todo Z.L : original code modified, now we allow ordered instructions escape
   if (MemInst.isVolatile())
     return nullptr;
   // We can't replace an atomic load with one which isn't also atomic.
-  // todo Z.L : Seems okay.
+  // todo z.l : Seems okay, can we do this?
   if (MemInst.isLoad() && !InVal.IsAtomic && MemInst.isAtomic())
     return nullptr;
   // The value V returned from this function is used differently depending
@@ -1469,15 +1469,17 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
 
       // (conservatively) we can't peak past the ordering implied by this
       // operation, but we can add this load to our set of available values
+      // todo z.l : this condition decides whether MemInst can be removed
+      //  More bluntly, for a RAR/RAW case, can we remove the read?
       if (MemInst.isVolatile() || !MemInst.isUnordered()) {
         LastStore = nullptr;
-        //todo Z.L : generation update might be not necessary for atomics
+        //todo Z.L : we only rule out volatiles since they are created not to be
+        // removed.
         if (MemInst.isVolatile()){
           ++CurrentGeneration;
         }
       }
 
-      //todo Z.L : deal with invariant loads (maybe)
       if (MemInst.isInvariantLoad()) {
         // If we pass an invariant load, we know that memory location is
         // indefinitely constant from the moment of first dereferenceability.
@@ -1501,8 +1503,8 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       if (Value *Op = getMatchingValue(InVal, MemInst, CurrentGeneration)) {
         LLVM_DEBUG(dbgs() << "EarlyCSE CSE LOAD: " << Inst
                           << "  to: " << *InVal.DefInst << '\n');
-        LLVM_DEBUG(dbgs() << "CurGen: " << CurrentGeneration <<
-                   " found load with Gen: " << InVal.Generation << '\n');
+//        LLVM_DEBUG(dbgs() << "CurGen: " << CurrentGeneration <<
+//                   " found val with Gen: " << InVal.Generation << '\n');
         if (!DebugCounter::shouldExecute(CSECounter)) {
           LLVM_DEBUG(dbgs() << "Skipping due to debug counter\n");
           continue;
@@ -1516,6 +1518,27 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         ++NumCSELoad;
         continue;
       }
+
+      //todo Z.L : now we have processed the read. And we didn't remove it.
+      // Now consider whether we can move across the read.
+      // EarlyCSE chooses to use CurrentGeneration, an efficient way, to record
+      // the version information of the memory. And efficiency is what it aims
+      // to achieve. By design, this means you can only choose to invalidate the
+      // whole memory or not.
+      // In fact we can compare CurrentGeneration with each record in AV. But that
+      // disobeys the original goal.
+      // I respect the design here.
+
+      //todo Z.L : possibly we shall not modify EarlyCSE.
+      //  r1 = a, sc       r2 = b, na      r2 = b, na
+      //  r2 = b, na  =>   r1 = a, sc  =>  r1 = a, sc
+      //  r3 = a, sc       r3 = a, sc
+      // this can happen, and it is wrong.
+      // However, the intermediate step is implicit.
+      // Can we PROVE that this actually is correct because we can
+      // move the later forwards???
+      if (!MemInst.isUnordered())
+        ++CurrentGeneration;
 
       // Otherwise, remember that we have this instruction.
       AvailableLoads.insert(MemInst.getPointerOperand(),
