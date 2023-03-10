@@ -1023,7 +1023,7 @@ struct DSEState {
 
     // Don't remove volatile/atomic stores.
     // todo Z.L : currently return true on all stores.
-    if (StoreInst *SI = dyn_cast<StoreInst>(I))
+    if (isa<StoreInst>(I))
       return true;
 
     if (auto *CB = dyn_cast<CallBase>(I)) {
@@ -1281,6 +1281,10 @@ struct DSEState {
 
     // Find the next clobbering Mod access for DefLoc, starting at StartAccess.
     Optional<MemoryLocation> CurrentLoc;
+
+    // todo Z.L : Added a flag
+    bool PastSCRead = false;
+    bool SeenAReleaseWrite = false;
     for (;; Current = cast<MemoryDef>(Current)->getDefiningAccess()) {
       LLVM_DEBUG({
         dbgs() << "   visiting " << *Current;
@@ -1306,6 +1310,12 @@ struct DSEState {
         return None;
       }
       WalkerStepLimit -= StepCost;
+
+      // todo Z.L : return None if we've met a release write
+      if(SeenAReleaseWrite){
+        LLVM_DEBUG(dbgs() << "   ...  cannot go across a release write\n");
+        return None;
+      }
 
       // Return for MemoryPhis. They cannot be eliminated directly and the
       // caller is responsible for traversing them.
@@ -1334,8 +1344,22 @@ struct DSEState {
       // Check for anything that looks like it will be a barrier to further
       // removal
       //todo Z.L : refined condition to support atomics
-      if(isNotStoreOrStrongerStore(CurrentI, KillingI)){
-        if (isDSEBarrier(KillingUndObj, CurrentI)) {
+//      if(isNotStoreOrStrongerStore(CurrentI, KillingI)){
+//        if (isDSEBarrier(KillingUndObj, CurrentI)) {
+//          LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
+//          return None;
+//        }
+//      }
+      //todo Z.L : If CurrentI is a store with ordering of at least release,
+      // We cannot reorder CurrentI with anything before it.
+      // Check if this one is the one to be deleted.
+      // TODO Z.L : MIGHT BE WRONG
+      if(testIsDSEBarrier(KillingUndObj, CurrentI)) {
+        if(isa<StoreInst>(CurrentI)){
+          //todo Z.L : In this case we've known the store is stronger than relaxed.
+          SeenAReleaseWrite = true;
+          LLVM_DEBUG(dbgs() << "  ... found a store barrier, try to eliminate\n");
+        } else {
           LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
           return None;
         }
@@ -1345,13 +1369,33 @@ struct DSEState {
 //        LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
 //        return None;
 //      }
+      //todo Z.L : Added new constraint
+      if(auto *LI = dyn_cast<LoadInst>(CurrentI)){
+        if(LI->getOrdering() == AtomicOrdering::SequentiallyConsistent)
+          PastSCRead = true;
+      }
+      if(auto *SI = dyn_cast<StoreInst>(CurrentI)){
+        if(SI->getOrdering() == AtomicOrdering::SequentiallyConsistent &&
+            PastSCRead){
+          LLVM_DEBUG(dbgs() << "  ... ... W_sc cannot reorder with R_sc\n");
+          continue;
+        }
+        if(auto *KI = dyn_cast<StoreInst>(KillingI)){
+          if(isStrongerThan(SI->getOrdering(), KI->getOrdering())){
+            LLVM_DEBUG(dbgs() << "  ... ... Current store has stronger ordering\n");
+            continue;
+          }
+        }
+      }
 
       // If Current is known to be on path that reads DefLoc or is a read
       // clobber, bail out, as the path is not profitable. We skip this check
       // for intrinsic calls, because the code knows how to handle memcpy
       // intrinsics.
-      //todo Z.L: isReadClobber also protects atomics
-
+      //todo Z.L: isReadClobber take atomic stores stronger than relaxed as clobber,
+      //  (which is fine in fact).
+      //   Reads with SC will also work as a clobber. Original version may have
+      //   solved this problem using the conservative AA.
 //      if (!isa<IntrinsicInst>(CurrentI) && isReadClobber(KillingLoc, CurrentI)){
       if (!isa<IntrinsicInst>(CurrentI) && testIsReadClobber(KillingLoc, CurrentI)){
         LLVM_DEBUG(dbgs() << "return None since CurrentI is a clobber.\n");
@@ -1436,7 +1480,8 @@ struct DSEState {
         }
       }
       break;
-    }
+    } // todo z.l: finished walking for(;;getDefiningAccess)
+    //    If we can reach here, we may have found a overwritten store
 
     // Accesses to objects accessible after the function returns can only be
     // eliminated if the access is dead along all paths to the exit. Collect
@@ -1728,6 +1773,31 @@ struct DSEState {
     }
     return false;
   }
+  //todo Z.L : isDSEBarrier is only invoked at one place. However, let's rewrite it.
+  bool testIsDSEBarrier(const Value *KillingUndObj, Instruction *DeadI) {
+    // If DeadI may throw it acts as a barrier, unless we are to an
+    // alloca/alloca like object that does not escape.
+    if (DeadI->mayThrow() && !isInvisibleToCallerOnUnwind(KillingUndObj))
+      return true;
+
+    // If DeadI is an atomic load/store stronger than monotonic, do not try to
+    // eliminate/reorder it.
+    if (DeadI->isAtomic()) {
+      //todo Z.L : we do not take reads as barrier now.
+      if (isa<LoadInst>(DeadI))
+        return false;
+      if (auto *SI = dyn_cast<StoreInst>(DeadI))
+        return isStrongerThanMonotonic(SI->getOrdering());
+      if (auto *ARMW = dyn_cast<AtomicRMWInst>(DeadI))
+        return isStrongerThanMonotonic(ARMW->getOrdering());
+      if (auto *CmpXchg = dyn_cast<AtomicCmpXchgInst>(DeadI))
+        return isStrongerThanMonotonic(CmpXchg->getSuccessOrdering()) ||
+               isStrongerThanMonotonic(CmpXchg->getFailureOrdering());
+      llvm_unreachable("other instructions should be skipped in MemorySSA");
+    }
+    return false;
+  }
+
 
   //todo Z.L : return false iff
   // - CurrentI and KillingI are both stores

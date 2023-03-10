@@ -1004,7 +1004,7 @@ bool EarlyCSE::isSameMemGeneration(unsigned EarlierGeneration,
 
   if (!MSSA)
     return false;
-  LLVM_DEBUG(dbgs() << "  Using MSSA!\n");
+//  LLVM_DEBUG(dbgs() << "  Using MSSA!\n");
   // If MemorySSA has determined that one of EarlierInst or LaterInst does not
   // read/write memory, then we can safely return true here.
   // FIXME: We could be more aggressive when checking doesNotAccessMemory(),
@@ -1013,11 +1013,16 @@ bool EarlyCSE::isSameMemGeneration(unsigned EarlierGeneration,
   // experiments suggest this isn't worthwhile, at least for C/C++ code compiled
   // with the default optimization pipeline.
   auto *EarlierMA = MSSA->getMemoryAccess(EarlierInst);
-  if (!EarlierMA)
+  if (!EarlierMA){
+//    LLVM_DEBUG(dbgs() << "  Earlier does not access memory!\n");
     return true;
+  }
+
   auto *LaterMA = MSSA->getMemoryAccess(LaterInst);
-  if (!LaterMA)
+  if (!LaterMA){
+//    LLVM_DEBUG(dbgs() << "  Later does not access memory!\n");
     return true;
+  }
 
   // Since we know LaterDef dominates LaterInst and EarlierInst dominates
   // LaterInst, if LaterDef dominates EarlierInst then it can't occur between
@@ -1030,6 +1035,8 @@ bool EarlyCSE::isSameMemGeneration(unsigned EarlierGeneration,
   } else
     LaterDef = LaterMA->getDefiningAccess();
 
+  LLVM_DEBUG(dbgs() << "  LaterDef:" << *LaterDef <<'\n');
+  LLVM_DEBUG(dbgs() << "  EarlierMA:" << *EarlierMA <<'\n');
   return MSSA->dominates(LaterDef, EarlierMA);
 }
 
@@ -1186,6 +1193,8 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
       !isSameMemGeneration(InVal.Generation, CurrentGeneration, InVal.DefInst,
                            MemInst.get()))
     return nullptr;
+
+  //todo z.l : Consider checking diff of generations to disable reordering of atomics
 
   if (!Result)
     Result = getOrCreateResult(Matching, Other->getType());
@@ -1545,6 +1554,7 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
                             LoadValue(&Inst, CurrentGeneration,
                                       MemInst.getMatchingId(),
                                       MemInst.isAtomic()));
+
       LastStore = nullptr;
       continue;
     }

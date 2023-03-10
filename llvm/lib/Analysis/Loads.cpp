@@ -682,7 +682,8 @@ static Value *testGetAvailableLoadStore(Instruction *Inst, const Value *Ptr,
     // other way around.
     //    if (LI->isAtomic() < AtLeastAtomic)
     //      return nullptr;
-    //todo Z.L : we can forward as long as def inst has a stronger ordering
+    //todo Z.L : we can only eliminate the second read if first read is stronger
+    // or equal.
     if (isStrongerThan(AtLeastOrdering, LI->getOrdering())){
 //      dbgs() << " Later load has a stronger ordering:\n"
 //             << "   found load inst: " << *Inst << '\n';
@@ -768,7 +769,20 @@ Value *llvm::TestFindAvailableLoadedValue(LoadInst *Load, AAResults &AA,
 //      dbgs() << "Found available: " << *Available << '\n';
       break;
     }
-    ///todo Z.L : again, \r mayWriteToMemory may need to be refined
+    //todo Z.L : ok, if we can reach here, then \r Inst is not an available.
+    // This means we need to move \r Load across \r Inst. In this case, we shall
+    // decide whether \r Inst is a clobber.
+    if(LoadInst *LI = dyn_cast<LoadInst>(&Inst)){
+      if(isAtLeastOrStrongerThan(LI->getOrdering(), AtomicOrdering::Acquire))
+        break;
+    }
+    if(StoreInst *SI = dyn_cast<StoreInst>(&Inst)){
+      if(AtLeastOrdering == AtomicOrdering::SequentiallyConsistent &&
+          SI->getOrdering() == AtomicOrdering::SequentiallyConsistent)
+        break;
+    }
+
+    //todo z.l : again, \r mayWriteToMemory may need to be refined
     if (Inst.mayWriteToMemory())
       MustNotAliasInsts.push_back(&Inst);
   }
