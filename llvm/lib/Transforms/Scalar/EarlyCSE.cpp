@@ -87,6 +87,11 @@ static cl::opt<bool> EarlyCSEDebugHash(
     cl::desc("Perform extra assertion checking to verify that SimpleValue's hash "
              "function is well-behaved w.r.t. its isEqual predicate"));
 
+// todo Z.L : this flag allows optimizations of atomics in EarlyCSE
+static cl::opt<bool>
+    OptimizeAtomic("cse-optimize-atomic", cl::init(false), cl::Hidden,
+                   cl::desc("Allow EarlyCSE to optimize atomic accesses."));
+
 //===----------------------------------------------------------------------===//
 // SimpleValue
 //===----------------------------------------------------------------------===//
@@ -559,8 +564,8 @@ public:
     unsigned Generation = 0;
     int MatchingId = -1;
     bool IsAtomic = false;
-    //todo Z.L: method for now is to maintain the ordering of last load
-    AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
+//    //todo Z.L: method for now is to maintain the ordering of last load
+//    AtomicOrdering Ordering = AtomicOrdering::NotAtomic;
 
     LoadValue() = default;
     LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
@@ -568,10 +573,10 @@ public:
         : DefInst(Inst), Generation(Generation), MatchingId(MatchingId),
           IsAtomic(IsAtomic) {}
 
-    LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
-              bool IsAtomic, AtomicOrdering Ordering)
-        : DefInst(Inst), Generation(Generation), MatchingId(MatchingId),
-          IsAtomic(IsAtomic), Ordering(Ordering) {}
+//    LoadValue(Instruction *Inst, unsigned Generation, unsigned MatchingId,
+//              bool IsAtomic, AtomicOrdering Ordering)
+//        : DefInst(Inst), Generation(Generation), MatchingId(MatchingId),
+//          IsAtomic(IsAtomic), Ordering(Ordering) {}
   };
 
   using LoadMapAllocator =
@@ -1129,8 +1134,10 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
   // todo Z.L : original code modified, now we allow ordered instructions escape
   if (MemInst.isVolatile())
     return nullptr;
+  if(!OptimizeAtomic && !MemInst.isUnordered())
+    return nullptr;
   // We can't replace an atomic load with one which isn't also atomic.
-  // todo z.l : Seems okay, can we do this?
+  // todo z.l : Seems okay so far
   if (MemInst.isLoad() && !InVal.IsAtomic && MemInst.isAtomic())
     return nullptr;
   // The value V returned from this function is used differently depending
@@ -1150,22 +1157,24 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
     return nullptr;
 
   //todo Z.L : check ordering to decide whether to remove a load
-  if (MemInst.isLoad()){
-    if(auto* LL = dyn_cast<LoadInst>(Other)){
-      if(auto* EL = dyn_cast<LoadInst>(Matching)){
-        if(isStrongerThan(LL->getOrdering(), EL->getOrdering())) {
-          LLVM_DEBUG(dbgs() << "  Later load has a stronger ordering" <<
-                     "    Earlier: " << *Matching <<
-                     "    Later: " << *Other << '\n');
-          return nullptr;
+  if(OptimizeAtomic){
+    if (MemInst.isLoad()){
+      if(auto* LL = dyn_cast<LoadInst>(Other)){
+        if(auto* EL = dyn_cast<LoadInst>(Matching)){
+          if(isStrongerThan(LL->getOrdering(), EL->getOrdering())) {
+            LLVM_DEBUG(dbgs() << "  Later load has a stronger ordering" <<
+                       "    Earlier: " << *Matching <<
+                       "    Later: " << *Other << '\n');
+            return nullptr;
+          }
         }
-      }
-      if(auto* ES = dyn_cast<StoreInst>(Matching)){
-        if(isStrongerThan(LL->getOrdering(), ES->getOrdering())){
-          LLVM_DEBUG(dbgs() << "  Load has a stronger ordering" <<
-                     "    Store: " << *Matching <<
-                     "    Load: " << *Other << '\n');
-          return nullptr;
+        if(auto* ES = dyn_cast<StoreInst>(Matching)){
+          if(isStrongerThan(LL->getOrdering(), ES->getOrdering())){
+            LLVM_DEBUG(dbgs() << "  Load has a stronger ordering" <<
+                       "    Store: " << *Matching <<
+                       "    Load: " << *Other << '\n');
+            return nullptr;
+          }
         }
       }
     }
@@ -1194,8 +1203,6 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
                            MemInst.get()))
     return nullptr;
 
-  //todo z.l : Consider checking diff of generations to disable reordering of atomics
-
   if (!Result)
     Result = getOrCreateResult(Matching, Other->getType());
   return Result;
@@ -1204,11 +1211,14 @@ Value *EarlyCSE::getMatchingValue(LoadValue &InVal, ParseMemoryInst &MemInst,
 bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
                                 const ParseMemoryInst &Later) {
   // Can we remove Earlier store because of Later store?
-  //todo Z.L : original assertion commented
-//  assert(Earlier.isUnordered() && !Earlier.isVolatile() &&
-//         "Violated invariant");
-  // todo Z.L : now my version simply guarantees Earlier is not volatile
-  assert(!Earlier.isVolatile() && "Earlier store cannot be volatile!");
+  //todo Z.L : original assertion only when OptimizeAtomic is false
+  if(!OptimizeAtomic){
+    assert(Earlier.isUnordered() && !Earlier.isVolatile() &&
+           "Violated invariant");
+  } else {
+    // todo Z.L : my version simply guarantees Earlier is not volatile
+    assert(!Earlier.isVolatile() && "Earlier store cannot be volatile!");
+  }
 
   if (Earlier.getPointerOperand() != Later.getPointerOperand()){
     LLVM_DEBUG(dbgs() << "  Pointer operand not equal" <<
@@ -1230,24 +1240,25 @@ bool EarlyCSE::overridingStores(const ParseMemoryInst &Earlier,
   // other atomic stores since we were going to execute the non-atomic
   // one anyway and the atomic one might never have become visible.
 
-  //todo Z.L: Refine the condition
-  //  Currently, remove the first store if it has a weaker or equal ordering
-  if(auto* ESI = dyn_cast<StoreInst>(Earlier.get())){
-    if (auto* LSI = dyn_cast<StoreInst>(Later.get())){
-      if(isStrongerThan(ESI->getOrdering(), LSI->getOrdering())){
+  //todo Z.L: we can remove the first store if it has a weaker or equal ordering
+  if(OptimizeAtomic){
+    if(auto* ESI = dyn_cast<StoreInst>(Earlier.get())){
+      if (auto* LSI = dyn_cast<StoreInst>(Later.get())){
+        if(isStrongerThan(ESI->getOrdering(), LSI->getOrdering())){
           LLVM_DEBUG(dbgs() << "  Later store has a weaker order\n" <<
                      "    Earlier: " << *(Earlier.get()) <<
                      "    Later: " << *(Later.get()) << '\n');
           return false;
+        }
       }
     }
+  } else {
+    if (!Earlier.isUnordered() || !Later.isUnordered()) {
+      LLVM_DEBUG(dbgs() <<"One of instructions: " << *(Earlier.get()) << " or "
+                        << *(Later.get()) <<" is ordered" << '\n');
+      return false;
+    }
   }
-  //todo Z.L: original code commented
-//  if (!Earlier.isUnordered() || !Later.isUnordered()) {
-//    LLVM_DEBUG(dbgs() <<"One of instructions: " << *(Earlier.get()) << " or "
-//                      << *(Later.get()) <<" is not unordered" << '\n');
-//    //return false;
-//  }
 
   // Deal with non-target memory intrinsics.
   bool ENTI = isHandledNonTargetIntrinsic(Earlier.get());
@@ -1484,7 +1495,11 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         LastStore = nullptr;
         //todo Z.L : we only rule out volatiles since they are created not to be
         // removed.
-        if (MemInst.isVolatile()){
+        if(OptimizeAtomic){
+          if (MemInst.isVolatile()){
+            ++CurrentGeneration;
+          }
+        } else {
           ++CurrentGeneration;
         }
       }
@@ -1546,8 +1561,10 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
       // However, the intermediate step is implicit.
       // Can we PROVE that this actually is correct because we can
       // move the later forwards???
-      if (!MemInst.isUnordered())
-        ++CurrentGeneration;
+      if(OptimizeAtomic){
+        if (!MemInst.isUnordered())
+          ++CurrentGeneration;
+      }
 
       // Otherwise, remember that we have this instruction.
       AvailableLoads.insert(MemInst.getPointerOperand(),
@@ -1566,23 +1583,17 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
     // memory, and thus will be treated the same as a regular store for
     // commoning purposes).
 
-    //todo Z.L : original mayReadFromMemory determining commented
-//    if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
-//        !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
-//      LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
-//                          << Inst << '\n');
-//      LastStore = nullptr;
-//    }
-
     if ((Inst.mayReadFromMemory() || Inst.mayThrow()) &&
         !(MemInst.isValid() && !MemInst.mayReadFromMemory())){
       //todo Z.L : let stores escape
-//      if(auto *SI = dyn_cast<StoreInst>(&Inst)){
-//      } else {
-      if(!isa<StoreInst>(Inst)){
+      if(OptimizeAtomic){
+        if(!isa<StoreInst>(Inst)){
+          LastStore = nullptr;
+          LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
+                            << Inst << '\n');
+        }
+      } else {
         LastStore = nullptr;
-        LLVM_DEBUG(dbgs() << "  LastStore set to null because it may read from mem: "
-                          << Inst << '\n');
       }
     }
 
@@ -1710,29 +1721,30 @@ bool EarlyCSE::processNode(DomTreeNode *Node) {
         // it's not clear this is a profitable transform. Another option would
         // be to merge the ordering with that of the post dominating store.
 
-        //todo Z.L : original code commented
-        //if (MemInst.isUnordered() && !MemInst.isVolatile())
-        //  LastStore = &Inst;
-        //else
-        //  LastStore = nullptr;
-
-        //todo Z.L : let atomic stores be recorded
-        if (MemInst.isVolatile()){ // volatile
-          LastStore = nullptr;
-          LLVM_DEBUG(dbgs() << "  LastStore set to null because it's volatile: "
-                     << Inst << '\n');
-        } else if (!MemInst.isUnordered()) { // ordered but not volatile
-          LastStore = nullptr;
-          //if (auto *SI = dyn_cast<StoreInst>(&Inst)){
-          if(isa<StoreInst>(Inst)){
-            LLVM_DEBUG(dbgs() << "  LastStore set to: "
+        //todo Z.L : let atomic stores survive
+        if(OptimizeAtomic){
+          if (MemInst.isVolatile()){ // volatile
+            LastStore = nullptr;
+            LLVM_DEBUG(dbgs() << "  LastStore set to null because it's volatile: "
+                              << Inst << '\n');
+          } else if (!MemInst.isUnordered()) { // ordered but not volatile
+            LastStore = nullptr;
+            //if (auto *SI = dyn_cast<StoreInst>(&Inst)){
+            if(isa<StoreInst>(Inst)){
+              LLVM_DEBUG(dbgs() << "  LastStore set to: "
                                 << Inst << '\n');
+              LastStore = &Inst;
+            }
+          } else { // unordered and not volatile
+            LLVM_DEBUG(dbgs() << "  LastStore set to: "
+                              << Inst << '\n');
             LastStore = &Inst;
           }
-        } else { // unordered and not volatile
-          LLVM_DEBUG(dbgs() << "  LastStore set to: "
-                            << Inst << '\n');
-          LastStore = &Inst;
+        } else {
+          if (MemInst.isUnordered() && !MemInst.isVolatile())
+            LastStore = &Inst;
+          else
+            LastStore = nullptr;
         }
 
       }

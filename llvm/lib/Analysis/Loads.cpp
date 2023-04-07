@@ -669,7 +669,8 @@ bool llvm::canReplacePointersIfEqual(Value *A, Value *B, const DataLayout &DL,
   return true;
 }
 
-///todo: ------------- Following functions added by Z.L ------------------------
+///todo Z.L :
+/// --- Following functions added to support optimizations of atomics in InstCombine -----
 
 static Value *testGetAvailableLoadStore(Instruction *Inst, const Value *Ptr,
                                         Type *AccessTy, AtomicOrdering AtLeastOrdering,

@@ -23,6 +23,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/PatternMatch.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombiner.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -33,6 +34,11 @@ using namespace PatternMatch;
 
 STATISTIC(NumDeadStore,    "Number of dead stores eliminated");
 STATISTIC(NumGlobalCopies, "Number of allocas copied from constant global");
+
+// todo Z.L : this flag allows optimizations of atomics in IC
+static cl::opt<bool>
+    OptimizeAtomic("ic-optimize-atomic", cl::init(false), cl::Hidden,
+                   cl::desc("Allow InstCombine to optimize atomic accesses."));
 
 /// isOnlyCopiedFromConstantGlobal - Recursively walk the uses of a (derived)
 /// pointer to an alloca.  Ignore any reads of the pointer, return false if we
@@ -955,16 +961,28 @@ Instruction *InstCombinerImpl::visitLoadInst(LoadInst &LI) {
   // where there are several consecutive memory accesses to the same location,
   // separated by a few arithmetic operations.
   bool IsLoadCSE = false;
-  ///todo Z.L : replaced with my function \r TestFindAvailableLoadedValue
-  //if (Value *AvailableVal = FindAvailableLoadedValue(&LI, *AA, &IsLoadCSE)) {
-  if (Value *AvailableVal = TestFindAvailableLoadedValue(&LI, *AA, &IsLoadCSE)) {
-    if (IsLoadCSE)
-      combineMetadataForCSE(cast<LoadInst>(AvailableVal), &LI, false);
+  // todo Z.L : in case OptimizeAtomic is true,
+  //  replaced with my function \r TestFindAvailableLoadedValue
+  if(OptimizeAtomic){
+    if (Value *AvailableVal = TestFindAvailableLoadedValue(&LI, *AA, &IsLoadCSE)) {
+      if (IsLoadCSE)
+        combineMetadataForCSE(cast<LoadInst>(AvailableVal), &LI, false);
 
-    return replaceInstUsesWith(
-        LI, Builder.CreateBitOrPointerCast(AvailableVal, LI.getType(),
-                                           LI.getName() + ".cast"));
+      return replaceInstUsesWith(
+          LI, Builder.CreateBitOrPointerCast(AvailableVal, LI.getType(),
+                                             LI.getName() + ".cast"));
+    }
+  } else {
+    if (Value *AvailableVal = FindAvailableLoadedValue(&LI, *AA, &IsLoadCSE)) {
+      if (IsLoadCSE)
+        combineMetadataForCSE(cast<LoadInst>(AvailableVal), &LI, false);
+
+      return replaceInstUsesWith(
+          LI, Builder.CreateBitOrPointerCast(AvailableVal, LI.getType(),
+                                             LI.getName() + ".cast"));
+    }
   }
+
 
   // None of the following transforms are legal for volatile/ordered atomic
   // loads.  Most of them do apply for unordered atomics.

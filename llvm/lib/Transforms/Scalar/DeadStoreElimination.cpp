@@ -169,6 +169,11 @@ static cl::opt<bool>
     OptimizeMemorySSA("dse-optimize-memoryssa", cl::init(true), cl::Hidden,
                       cl::desc("Allow DSE to optimize memory accesses."));
 
+// todo Z.L : this flag allows optimizations of atomics in DSE
+static cl::opt<bool>
+    OptimizeAtomic("dse-optimize-atomic", cl::init(false), cl::Hidden,
+                   cl::desc("Allow DSE to optimize atomic accesses."));
+
 //===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
@@ -1282,7 +1287,8 @@ struct DSEState {
     // Find the next clobbering Mod access for DefLoc, starting at StartAccess.
     Optional<MemoryLocation> CurrentLoc;
 
-    // todo Z.L : Added a flag
+    // todo Z.L : Added two flags for breaking the loop when further reordering
+    //  is not possible.
     bool PastSCRead = false;
     bool SeenAReleaseWrite = false;
     for (;; Current = cast<MemoryDef>(Current)->getDefiningAccess()) {
@@ -1312,9 +1318,11 @@ struct DSEState {
       WalkerStepLimit -= StepCost;
 
       // todo Z.L : return None if we've met a release write
-      if(SeenAReleaseWrite){
-        LLVM_DEBUG(dbgs() << "   ...  cannot go across a release write\n");
-        return None;
+      if(OptimizeAtomic){
+        if(SeenAReleaseWrite){
+          LLVM_DEBUG(dbgs() << "   ...  cannot go across a release write\n");
+          return None;
+        }
       }
 
       // Return for MemoryPhis. They cannot be eliminated directly and the
@@ -1354,39 +1362,50 @@ struct DSEState {
       // We cannot reorder CurrentI with anything before it.
       // Check if this one is the one to be deleted.
       // TODO Z.L : MIGHT BE WRONG
-      if(testIsDSEBarrier(KillingUndObj, CurrentI)) {
-        if(isa<StoreInst>(CurrentI)){
-          //todo Z.L : In this case we've known the store is stronger than relaxed.
-          SeenAReleaseWrite = true;
-          LLVM_DEBUG(dbgs() << "  ... found a store barrier, try to eliminate\n");
-        } else {
+      if(OptimizeAtomic){
+        if(testIsDSEBarrier(KillingUndObj, CurrentI)) {
+          if(isa<StoreInst>(CurrentI)){
+            //todo Z.L : In this case we've known the store is stronger than relaxed.
+            SeenAReleaseWrite = true;
+            LLVM_DEBUG(dbgs() << "  ... found a store barrier, try to eliminate\n");
+          } else {
+            LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
+            return None;
+          }
+        }
+      } else {
+        if(isDSEBarrier(KillingUndObj, CurrentI)){
           LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
           return None;
         }
       }
+
       //original:
 //      if (isDSEBarrier(KillingUndObj, CurrentI)) {
 //        LLVM_DEBUG(dbgs() << "  ... skip, barrier\n");
 //        return None;
 //      }
-      //todo Z.L : Added new constraint
-      if(auto *LI = dyn_cast<LoadInst>(CurrentI)){
-        if(LI->getOrdering() == AtomicOrdering::SequentiallyConsistent)
-          PastSCRead = true;
-      }
-      if(auto *SI = dyn_cast<StoreInst>(CurrentI)){
-        if(SI->getOrdering() == AtomicOrdering::SequentiallyConsistent &&
-            PastSCRead){
-          LLVM_DEBUG(dbgs() << "  ... ... W_sc cannot reorder with R_sc\n");
-          continue;
+      //todo Z.L : Added new constraints
+      if(OptimizeAtomic){
+        if(auto *LI = dyn_cast<LoadInst>(CurrentI)){
+          if(LI->getOrdering() == AtomicOrdering::SequentiallyConsistent)
+            PastSCRead = true;
         }
-        if(auto *KI = dyn_cast<StoreInst>(KillingI)){
-          if(isStrongerThan(SI->getOrdering(), KI->getOrdering())){
-            LLVM_DEBUG(dbgs() << "  ... ... Current store has stronger ordering\n");
+        if(auto *SI = dyn_cast<StoreInst>(CurrentI)){
+          if(SI->getOrdering() == AtomicOrdering::SequentiallyConsistent &&
+              PastSCRead){
+            LLVM_DEBUG(dbgs() << "  ... ... W_sc cannot reorder with R_sc\n");
             continue;
+          }
+          if(auto *KI = dyn_cast<StoreInst>(KillingI)){
+            if(isStrongerThan(SI->getOrdering(), KI->getOrdering())){
+              LLVM_DEBUG(dbgs() << "  ... ... Current store has stronger ordering\n");
+              continue;
+            }
           }
         }
       }
+
 
       // If Current is known to be on path that reads DefLoc or is a read
       // clobber, bail out, as the path is not profitable. We skip this check
@@ -1397,10 +1416,18 @@ struct DSEState {
       //   Reads with SC will also work as a clobber. Original version may have
       //   solved this problem using the conservative AA.
 //      if (!isa<IntrinsicInst>(CurrentI) && isReadClobber(KillingLoc, CurrentI)){
-      if (!isa<IntrinsicInst>(CurrentI) && testIsReadClobber(KillingLoc, CurrentI)){
-        LLVM_DEBUG(dbgs() << "return None since CurrentI is a clobber.\n");
-        return None;
+      if(OptimizeAtomic){
+        if (!isa<IntrinsicInst>(CurrentI) && testIsReadClobber(KillingLoc, CurrentI)){
+          LLVM_DEBUG(dbgs() << "return None since CurrentI is a clobber.\n");
+          return None;
+        }
+      } else {
+        if (!isa<IntrinsicInst>(CurrentI) && isReadClobber(KillingLoc, CurrentI)){
+          LLVM_DEBUG(dbgs() << "return None since CurrentI is a clobber.\n");
+          return None;
+        }
       }
+
 
       // Quick check if there are direct uses that are read-clobbers.
       if (any_of(Current->uses(), [this, &KillingLoc, StartAccess](Use &U) {
@@ -1418,10 +1445,18 @@ struct DSEState {
       // todo Z.L : isRemovable rewritten
       CurrentLoc = getLocForWrite(CurrentI);
 //      if (!CurrentLoc || !isRemovable(CurrentI)) {
-      if (!CurrentLoc || !testIsRemovable(CurrentI)) {
-        LLVM_DEBUG(dbgs() << "   ...  CurrentI has no analyzable location or not removable\n");
-        CanOptimize = false;
-        continue;
+      if(OptimizeAtomic){
+        if (!CurrentLoc || !testIsRemovable(CurrentI)) {
+          LLVM_DEBUG(dbgs() << "   ...  CurrentI has no analyzable location or not removable\n");
+          CanOptimize = false;
+          continue;
+        }
+      } else {
+        if (!CurrentLoc || !isRemovable(CurrentI)) {
+          LLVM_DEBUG(dbgs() << "   ...  CurrentI has no analyzable location or not removable\n");
+          CanOptimize = false;
+          continue;
+        }
       }
 
       // AliasAnalysis does not account for loops. Limit elimination to
@@ -1562,10 +1597,18 @@ struct DSEState {
       // original MD. Stop walk.
       // todo Z.L : again replaced with mine
 //      if (isReadClobber(MaybeDeadLoc, UseInst)) {
-      if (testIsReadClobber(MaybeDeadLoc, UseInst)) {
-        LLVM_DEBUG(dbgs() << "    ... found read clobber\n");
-        return None;
+      if(OptimizeAtomic){
+        if (testIsReadClobber(MaybeDeadLoc, UseInst)) {
+          LLVM_DEBUG(dbgs() << "    ... found read clobber\n");
+          return None;
+        }
+      } else {
+        if (isReadClobber(MaybeDeadLoc, UseInst)) {
+          LLVM_DEBUG(dbgs() << "    ... found read clobber\n");
+          return None;
+        }
       }
+
 
       // If this worklist walks back to the original memory access (and the
       // pointer is not guarenteed loop invariant) then we cannot assume that a
