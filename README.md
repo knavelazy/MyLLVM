@@ -37,28 +37,31 @@ This is an example work-flow and configuration to get and build the LLVM source:
 
         Some common options:
   
-        * ``-DLLVM_USE_LINKER=lld`` --- Link with the [lld linker](https://lld.llvm.org/), assuming it is installed on your system. This can dramatically speed up link times if the default linker is slow. **This is especially helpful when you have limited RAM. And Ninja runs out of it.**
+        * ``-DLLVM_USE_LINKER=lld`` --- Link with the [lld linker](https://lld.llvm.org/), assuming it is installed on your system. This can dramatically speed up link times if the default linker is slow. **This is especially helpful when you have limited RAM， and Ninja runs out of it.**
       
         * ``LLVM_PARALLEL_COMPILE_JOBS:STRING`` and ``LLVM_PARALLEL_LINK_JOBS:STRING`` --- **Constrain the numbers of compile and link jobs in parallel respectively. Set and reduce them when you run out of RAM**
 
         * ``-DCMAKE_BUILD_TYPE=type`` --- Valid options for *type* are Debug,
-          Release, RelWithDebInfo, and MinSizeRel. Default is Debug. **If you are an LLVM developer, use Debug. If you are just building it for use, Release will save much space for you.**
+          Release, RelWithDebInfo, and MinSizeRel. Default is Debug. **If you are an LLVM developer, use Debug. If you are building it for use, Release will save space for you.**
 
       * ``make``
 
         **This will build the project. Or use ``ninja -j`` if you use Ninja. ``j`` specifies the number of threads you wish to use.**
 
       * For more information see [CMake](https://llvm.org/docs/CMake.html)
-  
-## To Use
-Just use the built compiler as a normal clang-14 compiler. Assuming you add ``llvm/build/bin`` to your path, you can try it like:
-``clang -O3 file.c``
-And to enable our modifications, use ``-mllvm`` parameters like:
-``clang -O3 file.c -mllvm -dse-optimize-atomic``
-This will allow DSE pass to optimize atomic memory accesses. Similarly, for EarlyCSE pass and InstCombine pass, use ``-mllvm -cse-optimize-atomic`` and ``-mllvm -ic-optimize-atomic``.
-
 Consult the
 [Getting Started with LLVM](https://llvm.org/docs/GettingStarted.html#getting-started-with-llvm)
 page for detailed information on configuring and compiling LLVM. You can visit
 [Directory Layout](https://llvm.org/docs/GettingStarted.html#directory-layout)
 to learn about the layout of the source code tree.
+  
+## To Use
+Just use the built compiler as a normal clang-14 compiler. Assuming you add ``llvm/build/bin`` to your path, you can try it like:
+
+``clang -O3 file.c``
+
+And to enable our modifications, use ``-mllvm`` parameters like:
+
+``clang -O3 file.c -mllvm -dse-optimize-atomic``
+
+This will allow DSE pass to optimize atomic memory accesses. Similarly, for EarlyCSE pass and InstCombine pass, use ``-mllvm -cse-optimize-atomic`` and ``-mllvm -ic-optimize-atomic``.
